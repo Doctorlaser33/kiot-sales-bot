@@ -36,10 +36,14 @@ async function readSheet() {
 }
 
 async function askClaude(question, data) {
+
+    console.log("CLAUDE_API_KEY:", !!CLAUDE_API_KEY);
+    console.log("SHEET_ID:", SHEET_ID);
+
     const response = await axios.post(
         'https://api.anthropic.com/v1/messages',
         {
-            model: 'claude-3-5-haiku-latest',
+            model: 'claude-haiku-4-5',
             max_tokens: 300,
             messages: [
                 {
@@ -51,7 +55,7 @@ ${JSON.stringify(data)}
 Câu hỏi:
 ${question}
 
-Trả lời ngắn gọn tiếng Việt.
+Trả lời ngắn gọn bằng tiếng Việt.
 `
                 }
             ]
@@ -60,9 +64,7 @@ Trả lời ngắn gọn tiếng Việt.
             headers: {
                 'x-api-key': CLAUDE_API_KEY,
                 'anthropic-version': '2023-06-01',
-                'anthropic-dangerous-direct-browser-access': 'true',
                 'content-type': 'application/json'
-
             }
         }
     );
@@ -82,6 +84,7 @@ async function sendTelegram(chatId, text) {
 
 app.post('/webhook', async (req, res) => {
     try {
+
         const msg = req.body.message;
 
         if (!msg || !msg.text) {
@@ -91,21 +94,40 @@ app.post('/webhook', async (req, res) => {
         const chatId = msg.chat.id;
         const question = msg.text;
 
+        console.log("Question:", question);
+
         const data = await readSheet();
 
+        console.log("Sheet rows:", data.length);
+
         const answer = await askClaude(question, data);
+
+        console.log("Claude answer:", answer);
 
         await sendTelegram(chatId, answer);
 
         res.sendStatus(200);
+
     } catch (err) {
-        console.error(err.response?.data || err.message);
+
+        console.error(
+            JSON.stringify(
+                err.response?.data || err.message,
+                null,
+                2
+            )
+        );
+
         res.sendStatus(200);
     }
 });
+
 app.get('/', (req, res) => {
     res.send('Bot running');
 });
-app.listen(3000, () => {
-    console.log('Bot running on port 3000');
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+    console.log(`Bot running on port ${PORT}`);
 });
