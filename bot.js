@@ -13,8 +13,12 @@ const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 const SHEET_ID = process.env.SHEET_ID;
 
 async function readSheet() {
+    const credentials = JSON.parse(
+        process.env.GOOGLE_SERVICE_ACCOUNT_JSON
+    );
+
     const auth = new google.auth.GoogleAuth({
-        keyFile: 'service-account.json',
+        credentials,
         scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly']
     });
 
