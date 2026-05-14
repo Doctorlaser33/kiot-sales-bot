@@ -100,7 +100,9 @@ app.post('/webhook', async (req, res) => {
         res.sendStatus(200);
     }
 });
-
+app.get('/', (req, res) => {
+    res.send('Bot running');
+});
 app.listen(3000, () => {
     console.log('Bot running on port 3000');
 });
