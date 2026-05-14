@@ -13,33 +13,33 @@ const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 const SHEET_ID = process.env.SHEET_ID;
 
 async function readSheet() {
-    const credentials = JSON.parse(
-        process.env.GOOGLE_SERVICE_ACCOUNT_JSON
-    );
+    const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
 
     const auth = new google.auth.GoogleAuth({
         credentials,
         scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly']
     });
 
-    const sheets = google.sheets({
-        version: 'v4',
-        auth
-    });
+    const sheets = google.sheets({ version: 'v4', auth });
 
     const res = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
-        range: 'daily_sales!A:G'
+        range: 'daily_sales!A:E'
     });
 
-    return res.data.values || [];
+    const rows = res.data.values || [];
+    const [header, ...dataRows] = rows;
+
+    return dataRows.map(row => ({
+        orderCode: row[0] || '',
+        customerCode: row[1] || '',
+        revenue: Number(String(row[2] || '0').replace(/[^\d.-]/g, '')),
+        date: row[3] || '',
+        lastUpdated: row[4] || ''
+    }));
 }
 
 async function askClaude(question, data) {
-
-    console.log("CLAUDE_API_KEY:", !!CLAUDE_API_KEY);
-    console.log("SHEET_ID:", SHEET_ID);
-
     const response = await axios.post(
         'https://api.anthropic.com/v1/messages',
         {
@@ -49,13 +49,27 @@ async function askClaude(question, data) {
                 {
                     role: 'user',
                     content: `
-Dữ liệu doanh số:
+Bạn là chatbot báo cáo doanh thu nội bộ.
+
+Dữ liệu bên dưới có cấu trúc:
+- orderCode: mã đơn
+- customerCode: mã khách hàng
+- revenue: doanh thu của đơn
+- date: NGÀY BÁN HÀNG, dùng cột này để lọc theo ngày
+- lastUpdated: thời gian đồng bộ dữ liệu, KHÔNG dùng cột này để tính doanh thu
+
+Dữ liệu:
 ${JSON.stringify(data)}
 
 Câu hỏi:
 ${question}
 
-Trả lời ngắn gọn bằng tiếng Việt.
+Yêu cầu:
+- Luôn dùng cột date để lọc ngày.
+- Không dùng lastUpdated để tính doanh thu.
+- Nếu hỏi doanh thu ngày nào, cộng revenue của các đơn có date đúng ngày đó.
+- Trả lời ngắn gọn bằng tiếng Việt.
+- Format tiền VND có dấu chấm.
 `
                 }
             ]
@@ -84,7 +98,6 @@ async function sendTelegram(chatId, text) {
 
 app.post('/webhook', async (req, res) => {
     try {
-
         const msg = req.body.message;
 
         if (!msg || !msg.text) {
@@ -94,30 +107,14 @@ app.post('/webhook', async (req, res) => {
         const chatId = msg.chat.id;
         const question = msg.text;
 
-        console.log("Question:", question);
-
         const data = await readSheet();
-
-        console.log("Sheet rows:", data.length);
-
         const answer = await askClaude(question, data);
-
-        console.log("Claude answer:", answer);
 
         await sendTelegram(chatId, answer);
 
         res.sendStatus(200);
-
     } catch (err) {
-
-        console.error(
-            JSON.stringify(
-                err.response?.data || err.message,
-                null,
-                2
-            )
-        );
-
+        console.error(JSON.stringify(err.response?.data || err.message, null, 2));
         res.sendStatus(200);
     }
 });
