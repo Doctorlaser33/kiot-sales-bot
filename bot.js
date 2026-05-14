@@ -39,7 +39,7 @@ async function askClaude(question, data) {
     const response = await axios.post(
         'https://api.anthropic.com/v1/messages',
         {
-            model: 'claude-3-haiku-20240307',
+            model: 'claude-3-5-haiku-latest',
             max_tokens: 300,
             messages: [
                 {
@@ -59,7 +59,10 @@ Trả lời ngắn gọn tiếng Việt.
         {
             headers: {
                 'x-api-key': CLAUDE_API_KEY,
-                'anthropic-version': '2023-06-01'
+                'anthropic-version': '2023-06-01',
+                'anthropic-dangerous-direct-browser-access': 'true',
+                'content-type': 'application/json'
+
             }
         }
     );
