@@ -43,7 +43,7 @@ async function askClaude(question, data) {
     const response = await axios.post(
         'https://api.anthropic.com/v1/messages',
         {
-            model: 'claude-haiku-4-5',
+            model: 'claude-sonnet-4-5',
             max_tokens: 300,
             messages: [
                 {
