@@ -24,26 +24,166 @@ async function readSheet() {
 
     const res = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
-        range: 'daily_sales!A:E'
+        range: 'daily_sales!A:D',
+        valueRenderOption: 'UNFORMATTED_VALUE'
     });
 
     const rows = res.data.values || [];
-    const [header, ...dataRows] = rows;
+    const [, ...dataRows] = rows;
 
     return dataRows.map(row => ({
-        orderCode: row[0] || '',
-        customerCode: row[1] || '',
-        revenue: Number(String(row[2] || '0').replace(/[^\d.-]/g, '')),
-        date: row[3] || '',
-        lastUpdated: row[4] || ''
+        orderCode: String(row[0] || ''),
+        customerCode: String(row[1] || ''),
+        revenue: Number(row[2] || 0),
+        date: normalizeDate(row[3] || '')
     }));
 }
 
+function normalizeDate(value) {
+    if (!value) return '';
+
+    if (typeof value === 'string') {
+        return value.trim();
+    }
+
+    return String(value).trim();
+}
+
+function formatVND(number) {
+    return Number(number || 0).toLocaleString('vi-VN') + ' VND';
+}
+
+function getTodayVN() {
+    const now = new Date();
+
+    const day = String(now.getDate()).padStart(2, '0');
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const year = now.getFullYear();
+
+    return `${day}/${month}/${year}`;
+}
+
+function extractDateFromQuestion(question) {
+    const q = question.toLowerCase();
+
+    if (
+        q.includes('hôm nay') ||
+        q.includes('hom nay') ||
+        q.includes('today')
+    ) {
+        return getTodayVN();
+    }
+
+    const match = question.match(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/);
+
+    if (!match) return null;
+
+    const parts = match[0].split('/');
+
+    const day = parts[0].padStart(2, '0');
+    const month = parts[1].padStart(2, '0');
+    const year = parts[2];
+
+    return `${day}/${month}/${year}`;
+}
+
+function getSalesByDate(data, targetDate) {
+    const orders = data.filter(item => item.date === targetDate);
+
+    const totalRevenue = orders.reduce(
+        (sum, item) => sum + Number(item.revenue || 0),
+        0
+    );
+
+    return {
+        date: targetDate,
+        orderCount: orders.length,
+        totalRevenue,
+        orders
+    };
+}
+
+function buildSalesDateAnswer(report) {
+    if (report.orderCount === 0) {
+        return `Ngày ${report.date} chưa có dữ liệu doanh thu.`;
+    }
+
+    return [
+        `📊 Doanh thu ngày ${report.date}`,
+        ``,
+        `Tổng doanh thu: ${formatVND(report.totalRevenue)}`,
+        `Số đơn: ${report.orderCount} đơn`
+    ].join('\n');
+}
+
+function buildOrderListAnswer(report) {
+    if (report.orderCount === 0) {
+        return `Ngày ${report.date} chưa có đơn hàng nào.`;
+    }
+
+    const lines = report.orders
+        .slice(0, 30)
+        .map(item => `- ${item.orderCode}: ${formatVND(item.revenue)}`);
+
+    const more =
+        report.orders.length > 30
+            ? `\n\nCòn ${report.orders.length - 30} đơn khác.`
+            : '';
+
+    return [
+        `📋 Danh sách đơn ngày ${report.date}`,
+        ``,
+        ...lines,
+        more
+    ].join('\n');
+}
+
+function tryAnswerByCode(question, data) {
+    const q = question.toLowerCase();
+
+    const isSalesQuestion =
+        q.includes('doanh thu') ||
+        q.includes('doanh số') ||
+        q.includes('doanh so');
+
+    const isOrderListQuestion =
+        q.includes('liệt kê') ||
+        q.includes('liet ke') ||
+        q.includes('danh sách') ||
+        q.includes('danh sach') ||
+        q.includes('chi tiết') ||
+        q.includes('chi tiet') ||
+        q.includes('các đơn') ||
+        q.includes('cac don');
+
+    const targetDate = extractDateFromQuestion(question);
+
+    if (targetDate && isSalesQuestion) {
+        const report = getSalesByDate(data, targetDate);
+
+        if (isOrderListQuestion) {
+            return buildOrderListAnswer(report);
+        }
+
+        return buildSalesDateAnswer(report);
+    }
+
+    return null;
+}
+
 async function askClaude(question, data) {
+    const codeAnswer = tryAnswerByCode(question, data);
+
+    if (codeAnswer) {
+        return codeAnswer;
+    }
+
+    const summary = buildSummaryForClaude(data);
+
     const response = await axios.post(
         'https://api.anthropic.com/v1/messages',
         {
-            model: 'claude-sonnet-4-6',
+            model: 'claude-haiku-4-5',
             max_tokens: 300,
             messages: [
                 {
@@ -51,25 +191,18 @@ async function askClaude(question, data) {
                     content: `
 Bạn là chatbot báo cáo doanh thu nội bộ.
 
-Dữ liệu bên dưới có cấu trúc:
-- orderCode: mã đơn
-- customerCode: mã khách hàng
-- revenue: doanh thu của đơn
-- date: NGÀY BÁN HÀNG, dùng cột này để lọc theo ngày
-- lastUpdated: thời gian đồng bộ dữ liệu, KHÔNG dùng cột này để tính doanh thu
-
-Dữ liệu:
-${JSON.stringify(data)}
+Dữ liệu đã được code tổng hợp sẵn:
+${JSON.stringify(summary)}
 
 Câu hỏi:
 ${question}
 
-Yêu cầu:
-- Luôn dùng cột date để lọc ngày.
-- Không dùng lastUpdated để tính doanh thu.
-- Nếu hỏi doanh thu ngày nào, cộng revenue của các đơn có date đúng ngày đó.
+Quy tắc:
+- Trả lời đúng trọng tâm câu hỏi.
+- Không giải thích cấu trúc dữ liệu.
+- Không tự bịa số liệu.
+- Nếu không đủ dữ liệu thì nói chưa có dữ liệu.
 - Trả lời ngắn gọn bằng tiếng Việt.
-- Format tiền VND có dấu chấm.
 `
                 }
             ]
@@ -84,6 +217,34 @@ Yêu cầu:
     );
 
     return response.data.content[0].text;
+}
+
+function buildSummaryForClaude(data) {
+    const byDate = {};
+
+    data.forEach(item => {
+        if (!item.date) return;
+
+        if (!byDate[item.date]) {
+            byDate[item.date] = {
+                date: item.date,
+                orderCount: 0,
+                totalRevenue: 0
+            };
+        }
+
+        byDate[item.date].orderCount += 1;
+        byDate[item.date].totalRevenue += Number(item.revenue || 0);
+    });
+
+    return Object.values(byDate)
+        .sort((a, b) => {
+            const [da, ma, ya] = a.date.split('/').map(Number);
+            const [db, mb, yb] = b.date.split('/').map(Number);
+
+            return new Date(yb, mb - 1, db) - new Date(ya, ma - 1, da);
+        })
+        .slice(0, 60);
 }
 
 async function sendTelegram(chatId, text) {
@@ -114,7 +275,14 @@ app.post('/webhook', async (req, res) => {
 
         res.sendStatus(200);
     } catch (err) {
-        console.error(JSON.stringify(err.response?.data || err.message, null, 2));
+        console.error(
+            JSON.stringify(
+                err.response?.data || err.message,
+                null,
+                2
+            )
+        );
+
         res.sendStatus(200);
     }
 });
