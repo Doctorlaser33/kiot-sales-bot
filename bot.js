@@ -20,7 +20,10 @@ async function readSheet() {
         scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly']
     });
 
-    const sheets = google.sheets({ version: 'v4', auth });
+    const sheets = google.sheets({
+        version: 'v4',
+        auth
+    });
 
     const res = await sheets.spreadsheets.values.get({
         spreadsheetId: SHEET_ID,
@@ -42,11 +45,30 @@ async function readSheet() {
 function normalizeDate(value) {
     if (!value) return '';
 
-    if (typeof value === 'string') {
-        return value.trim();
+    // Google Sheet có thể trả ngày dạng serial number
+    // Ví dụ 46156 thay vì 14/05/2026
+    if (typeof value === 'number') {
+        const msPerDay = 24 * 60 * 60 * 1000;
+        const googleEpoch = Date.UTC(1899, 11, 30);
+        const date = new Date(googleEpoch + value * msPerDay);
+
+        const day = String(date.getUTCDate()).padStart(2, '0');
+        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const year = date.getUTCFullYear();
+
+        return `${day}/${month}/${year}`;
     }
 
-    return String(value).trim();
+    const text = String(value).trim();
+
+    const match = text.match(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/);
+
+    if (match) {
+        const [d, m, y] = match[0].split('/');
+        return `${d.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`;
+    }
+
+    return text;
 }
 
 function formatVND(number) {
@@ -171,6 +193,34 @@ function tryAnswerByCode(question, data) {
     return null;
 }
 
+function buildSummaryForClaude(data) {
+    const byDate = {};
+
+    data.forEach(item => {
+        if (!item.date) return;
+
+        if (!byDate[item.date]) {
+            byDate[item.date] = {
+                date: item.date,
+                orderCount: 0,
+                totalRevenue: 0
+            };
+        }
+
+        byDate[item.date].orderCount += 1;
+        byDate[item.date].totalRevenue += Number(item.revenue || 0);
+    });
+
+    return Object.values(byDate)
+        .sort((a, b) => {
+            const [da, ma, ya] = a.date.split('/').map(Number);
+            const [db, mb, yb] = b.date.split('/').map(Number);
+
+            return new Date(yb, mb - 1, db) - new Date(ya, ma - 1, da);
+        })
+        .slice(0, 60);
+}
+
 async function askClaude(question, data) {
     const codeAnswer = tryAnswerByCode(question, data);
 
@@ -217,34 +267,6 @@ Quy tắc:
     );
 
     return response.data.content[0].text;
-}
-
-function buildSummaryForClaude(data) {
-    const byDate = {};
-
-    data.forEach(item => {
-        if (!item.date) return;
-
-        if (!byDate[item.date]) {
-            byDate[item.date] = {
-                date: item.date,
-                orderCount: 0,
-                totalRevenue: 0
-            };
-        }
-
-        byDate[item.date].orderCount += 1;
-        byDate[item.date].totalRevenue += Number(item.revenue || 0);
-    });
-
-    return Object.values(byDate)
-        .sort((a, b) => {
-            const [da, ma, ya] = a.date.split('/').map(Number);
-            const [db, mb, yb] = b.date.split('/').map(Number);
-
-            return new Date(yb, mb - 1, db) - new Date(ya, ma - 1, da);
-        })
-        .slice(0, 60);
 }
 
 async function sendTelegram(chatId, text) {
