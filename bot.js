@@ -98,6 +98,40 @@ function getChatContext(chatId) {
     return chatContexts.get(chatId);
 }
 
+function normalizeComparableText(text) {
+    return normalizeQuestionText(text).replace(/\s+/g, '');
+}
+
+function findMentionedCode(data, question, field) {
+    const normalizedQuestion = normalizeComparableText(question);
+    const codes = [...new Set(data.map(item => item[field]).filter(Boolean))];
+
+    return codes.find(code =>
+        normalizedQuestion.includes(normalizeComparableText(code))
+    );
+}
+
+function updateQuestionContext(question, data, context) {
+    const date = extractDateFromQuestion(question);
+    const customerCode = findMentionedCode(data, question, 'customerCode');
+    const orderCode = findMentionedCode(data, question, 'orderCode');
+
+    if (date) {
+        context.lastDate = date;
+    }
+
+    if (customerCode) {
+        context.lastCustomerCode = customerCode;
+    }
+
+    if (orderCode) {
+        context.lastOrderCode = orderCode;
+    }
+
+    context.lastQuestion = question;
+    context.lastQuestionAt = Date.now();
+}
+
 function getTodayVN() {
     const now = new Date();
 
@@ -240,6 +274,77 @@ function tryAnswerByCode(question, data, context = {}) {
     return null;
 }
 
+function buildDataContextForClaude(data) {
+    const byDate = {};
+    const byCustomer = {};
+
+    data.forEach(item => {
+        if (item.date) {
+            if (!byDate[item.date]) {
+                byDate[item.date] = {
+                    date: item.date,
+                    orderCount: 0,
+                    totalRevenue: 0
+                };
+            }
+
+            byDate[item.date].orderCount += 1;
+            byDate[item.date].totalRevenue += Number(item.revenue || 0);
+        }
+
+        if (item.customerCode) {
+            if (!byCustomer[item.customerCode]) {
+                byCustomer[item.customerCode] = {
+                    customerCode: item.customerCode,
+                    orderCount: 0,
+                    totalRevenue: 0,
+                    dates: []
+                };
+            }
+
+            byCustomer[item.customerCode].orderCount += 1;
+            byCustomer[item.customerCode].totalRevenue += Number(item.revenue || 0);
+
+            if (item.date && !byCustomer[item.customerCode].dates.includes(item.date)) {
+                byCustomer[item.customerCode].dates.push(item.date);
+            }
+        }
+    });
+
+    return {
+        schema: {
+            orderCode: 'Ma don hang',
+            customerCode: 'Ma khach hang',
+            revenue: 'Doanh so/gia tri don hang, don vi VND',
+            date: 'Ngay mua, dinh dang dd/mm/yyyy'
+        },
+        orders: data.map(item => ({
+            orderCode: item.orderCode,
+            customerCode: item.customerCode,
+            revenue: item.revenue,
+            date: item.date
+        })),
+        byDate: Object.values(byDate)
+            .sort((a, b) => {
+                const [da, ma, ya] = a.date.split('/').map(Number);
+                const [db, mb, yb] = b.date.split('/').map(Number);
+
+                return new Date(yb, mb - 1, db) - new Date(ya, ma - 1, da);
+            }),
+        byCustomer: Object.values(byCustomer)
+            .map(item => ({
+                ...item,
+                dates: item.dates.sort((a, b) => {
+                    const [da, ma, ya] = a.split('/').map(Number);
+                    const [db, mb, yb] = b.split('/').map(Number);
+
+                    return new Date(ya, ma - 1, da) - new Date(yb, mb - 1, db);
+                })
+            }))
+            .sort((a, b) => b.totalRevenue - a.totalRevenue)
+    };
+}
+
 function buildSummaryForClaude(data) {
     const byDate = {};
 
@@ -270,19 +375,14 @@ function buildSummaryForClaude(data) {
 
 async function askClaude(question, data, chatId) {
     const context = getChatContext(chatId);
-    const codeAnswer = tryAnswerByCode(question, data, context);
-
-    if (codeAnswer) {
-        return codeAnswer;
-    }
-
-    const summary = buildSummaryForClaude(data);
+    updateQuestionContext(question, data, context);
+    const dataContext = buildDataContextForClaude(data);
 
     const response = await axios.post(
         'https://api.anthropic.com/v1/messages',
         {
             model: 'claude-haiku-4-5',
-            max_tokens: 300,
+            max_tokens: 700,
             messages: [
                 {
                     role: 'user',
@@ -290,10 +390,25 @@ async function askClaude(question, data, chatId) {
 Bạn là chatbot báo cáo doanh thu nội bộ.
 
 Dữ liệu đã được code tổng hợp sẵn:
-${JSON.stringify(summary)}
+${JSON.stringify({
+    context: {
+        lastDate: context.lastDate || null,
+        lastCustomerCode: context.lastCustomerCode || null,
+        lastOrderCode: context.lastOrderCode || null,
+        lastQuestion: context.lastQuestion || null
+    },
+    data: dataContext
+})}
 
 Câu hỏi:
 ${question}
+
+Huong dan quan trong:
+- Du lieu JSON co context va data. data.orders la toan bo don hang vua doc tu Google Sheet trong lan hoi nay.
+- Moi dong orders co orderCode, customerCode, revenue, date.
+- Hay tu phan tich cau hoi, loc orders phu hop, tinh toan can thiet roi tra loi.
+- Neu hoi "khach do", "ngay do", "don do", dung context gan nhat de hieu tiep.
+- Khong chi tra loi doanh thu theo ngay; co the tra loi ve ma khach, ma don, so lan mua, ngay mua, tong tien, don lon nhat/nho nhat, danh sach don.
 
 Quy tắc:
 - Trả lời đúng trọng tâm câu hỏi.
