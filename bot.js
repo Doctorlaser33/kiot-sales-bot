@@ -11,6 +11,8 @@ app.use(express.json());
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 const SHEET_ID = process.env.SHEET_ID;
+const chatContexts = new Map();
+const CONTEXT_TTL_MS = 30 * 60 * 1000;
 
 async function readSheet() {
     const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
@@ -80,7 +82,20 @@ function normalizeQuestionText(text) {
         .toLowerCase()
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
-        .replace(/đ/g, 'd');
+        .replace(/\u0111/g, 'd');
+}
+
+function getChatContext(chatId) {
+    const context = chatContexts.get(chatId);
+    const isExpired =
+        context?.lastQuestionAt &&
+        Date.now() - context.lastQuestionAt > CONTEXT_TTL_MS;
+
+    if (!context || isExpired) {
+        chatContexts.set(chatId, {});
+    }
+
+    return chatContexts.get(chatId);
 }
 
 function getTodayVN() {
@@ -177,7 +192,7 @@ function buildOrderListAnswer(report) {
     ].join('\n');
 }
 
-function tryAnswerByCode(question, data) {
+function tryAnswerByCode(question, data, context = {}) {
     const q = normalizeQuestionText(question);
 
     const isSalesQuestion =
@@ -186,6 +201,7 @@ function tryAnswerByCode(question, data) {
         q.includes('doanh so');
 
     const isOrderListQuestion =
+        q.includes('cu the') ||
         q.includes('moi don') ||
         q.includes('tung don') ||
         q.includes('theo don') ||
@@ -200,16 +216,25 @@ function tryAnswerByCode(question, data) {
         q.includes('các đơn') ||
         q.includes('cac don');
 
-    const targetDate = extractDateFromQuestion(question);
+    const explicitDate = extractDateFromQuestion(question);
+    const targetDate =
+        explicitDate ||
+        (isOrderListQuestion ? context.lastSalesDate : null);
 
     if (targetDate && (isSalesQuestion || isOrderListQuestion)) {
         const report = getSalesByDate(data, targetDate);
+        context.lastSalesDate = targetDate;
+        context.lastQuestionAt = Date.now();
 
         if (isOrderListQuestion) {
             return buildOrderListAnswer(report);
         }
 
         return buildSalesDateAnswer(report);
+    }
+
+    if (isOrderListQuestion) {
+        return 'Bạn muốn xem chi tiết từng đơn của ngày nào? Ví dụ: "Chi tiết từng đơn ngày 20/05/2026".';
     }
 
     return null;
@@ -243,8 +268,9 @@ function buildSummaryForClaude(data) {
         .slice(0, 60);
 }
 
-async function askClaude(question, data) {
-    const codeAnswer = tryAnswerByCode(question, data);
+async function askClaude(question, data, chatId) {
+    const context = getChatContext(chatId);
+    const codeAnswer = tryAnswerByCode(question, data, context);
 
     if (codeAnswer) {
         return codeAnswer;
@@ -313,7 +339,7 @@ app.post('/webhook', async (req, res) => {
         const question = msg.text;
 
         const data = await readSheet();
-        const answer = await askClaude(question, data);
+        const answer = await askClaude(question, data, chatId);
 
         await sendTelegram(chatId, answer);
 
