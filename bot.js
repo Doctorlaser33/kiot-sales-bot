@@ -75,6 +75,14 @@ function formatVND(number) {
     return Number(number || 0).toLocaleString('vi-VN') + ' VND';
 }
 
+function normalizeQuestionText(text) {
+    return String(text || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd');
+}
+
 function getTodayVN() {
     const now = new Date();
 
@@ -86,7 +94,7 @@ function getTodayVN() {
 }
 
 function extractDateFromQuestion(question) {
-    const q = question.toLowerCase();
+    const q = normalizeQuestionText(question);
 
     if (
         q.includes('hôm nay') ||
@@ -145,7 +153,13 @@ function buildOrderListAnswer(report) {
 
     const lines = report.orders
         .slice(0, 30)
-        .map(item => `- ${item.orderCode}: ${formatVND(item.revenue)}`);
+        .map(item => {
+            const customer = item.customerCode
+                ? ` - KH: ${item.customerCode}`
+                : '';
+
+            return `- ${item.orderCode}${customer}: ${formatVND(item.revenue)}`;
+        });
 
     const more =
         report.orders.length > 30
@@ -155,13 +169,16 @@ function buildOrderListAnswer(report) {
     return [
         `📋 Danh sách đơn ngày ${report.date}`,
         ``,
+        `Tổng doanh thu: ${formatVND(report.totalRevenue)}`,
+        `Số đơn: ${report.orderCount} đơn`,
+        ``,
         ...lines,
         more
     ].join('\n');
 }
 
 function tryAnswerByCode(question, data) {
-    const q = question.toLowerCase();
+    const q = normalizeQuestionText(question);
 
     const isSalesQuestion =
         q.includes('doanh thu') ||
@@ -169,6 +186,11 @@ function tryAnswerByCode(question, data) {
         q.includes('doanh so');
 
     const isOrderListQuestion =
+        q.includes('moi don') ||
+        q.includes('tung don') ||
+        q.includes('theo don') ||
+        q.includes('don nao') ||
+        q.includes('bao nhieu moi don') ||
         q.includes('liệt kê') ||
         q.includes('liet ke') ||
         q.includes('danh sách') ||
@@ -180,7 +202,7 @@ function tryAnswerByCode(question, data) {
 
     const targetDate = extractDateFromQuestion(question);
 
-    if (targetDate && isSalesQuestion) {
+    if (targetDate && (isSalesQuestion || isOrderListQuestion)) {
         const report = getSalesByDate(data, targetDate);
 
         if (isOrderListQuestion) {
